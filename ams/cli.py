@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from ams.llm import get_llm
+from ams.llm import get_llm, load_dotenv
 from ams.mapping import build_plan, choose_pair
 from ams.parsers import parse_service
 from ams.pipeline import run
@@ -43,7 +43,12 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("out", type=Path, nargs="?", default=Path("ams-out"))
     rp.add_argument("--open", action="store_true", help="open the HTML report in a browser")
 
+    sub.add_parser("llm", help="show which LLM provider is configured and check that the key works")
+
     args = ap.parse_args(argv)
+    load_dotenv()
+    if args.cmd == "llm":
+        return _check_llm()
     if args.cmd == "parse":
         print(json.dumps(parse_service(args.service).to_dict(), indent=2))
         return 0
@@ -70,6 +75,19 @@ def main(argv: list[str] | None = None) -> int:
                  scanners=not args.no_scan, apply=args.apply)
     print(f"\n{'PASS' if report.passed else 'FAIL'}: report at {(args.out / 'ams-report.html').as_posix()}")
     return 0 if report.passed else 1
+
+
+def _check_llm() -> int:
+    llm = get_llm()
+    if llm is None:
+        print("no LLM configured: set GEMINI_API_KEY, GROQ_API_KEY or ANTHROPIC_API_KEY (environment or .env)")
+        return 1
+    answer = llm.complete_json("You check that an API key works.", 'Return {"ok": true}.')
+    if answer and answer.get("ok") is True:
+        print(f"{llm.name}: ok")
+        return 0
+    print(f"{llm.name}: FAILED ({llm.last_error or answer})")
+    return 1
 
 
 if __name__ == "__main__":

@@ -148,7 +148,8 @@ def llm_pairs(llm: LLM, provider: ServiceSchema, p_ent: Entity, c_ent: Entity) -
     answer = llm.complete_json(SYSTEM, json.dumps(payload))
     notes: list[str] = []
     if not answer or not isinstance(answer.get("pairs"), list):
-        return [], ["LLM returned no usable mapping; using heuristic matcher"]
+        reason = getattr(llm, "last_error", "") or "no usable answer"
+        return [], [f"LLM ({llm.name}) gave no usable mapping ({reason}); using heuristic matcher"]
     pairs, used_c, used_p = [], set(), set()
     for item in answer["pairs"]:
         cf, pf = c_ent.field(str(item.get("consumer_field"))), p_ent.field(str(item.get("provider_field")))
@@ -187,8 +188,17 @@ def build_plan(provider: ServiceSchema, consumer: ServiceSchema, p_ent: Entity, 
         provider.name, consumer.name, p_ent.name, c_ent.name, pairs,
         [f.name for f in c_ent.fields if f.name not in taken_c],
         [f.name for f in p_ent.fields if f.name not in taken_p],
-        llm.name if llm else "heuristic", notes,
+        _engine(llm, pairs), notes,
     )
+
+
+def _engine(llm: LLM | None, pairs: list[Pair]) -> str:
+    """Credit the engine that actually produced the pairs."""
+    if llm is None:
+        return "heuristic"
+    if any(p.source == "llm" for p in pairs):
+        return llm.name if all(p.source == "llm" for p in pairs) else f"{llm.name} + heuristic"
+    return f"heuristic (fallback from {llm.name})"
 
 
 def choose_pair(provider: ServiceSchema, consumer: ServiceSchema) -> tuple[Entity, Entity]:

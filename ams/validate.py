@@ -107,7 +107,9 @@ def heal(files: list[Path], llm: LLM | None, max_rounds: int = 3) -> HealResult:
             if fixed:
                 code = re.sub(r"^```(?:python)?\s*|\s*```\s*$", "", fixed.strip())
                 f.write_text(code + "\n", encoding="utf8")
-        result.rounds.append(HealRound(n, [str(d) for d in remaining], f"LLM repair ({llm.name})"))
+        error = getattr(llm, "last_error", "")
+        action = f"LLM repair ({llm.name})" + (f", provider error: {error}" if error else "")
+        result.rounds.append(HealRound(n, [str(d) for d in remaining], action))
     result.passed = not compile_check(files)
     return result
 
