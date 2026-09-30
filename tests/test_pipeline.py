@@ -75,3 +75,11 @@ def test_cli_run(tmp_path, capsys):
     assert code == 0
     assert "PASS" in capsys.readouterr().out
     shutil.rmtree(out)
+
+
+def test_requirements_pin_the_transitive_closure(tmp_path):
+    run(EXAMPLES / "order-service", EXAMPLES / "billing-service", tmp_path,
+        use_llm=False, scanners=False, log=lambda _: None)
+    pins = dict(line.split("==") for line in (tmp_path / "requirements.txt").read_text().splitlines()
+                if "==" in line)
+    assert {"httpx", "pydantic", "anyio", "idna", "httpcore", "pydantic-core"} <= set(pins)

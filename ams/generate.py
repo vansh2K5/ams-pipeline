@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError, requires, version
 from pathlib import Path
 
 from ams.mapping import MappingPlan
@@ -258,17 +258,35 @@ class {client_class}:
     compose_file.write_text(_compose(provider, consumer, env_var, out_dir), encoding="utf8")
 
     requirements_file = out_dir / "requirements.txt"  # standard name so OSV-Scanner and Trivy detect it
-    requirements_file.write_text("".join(f"{pkg_name}=={_version(pkg_name)}\n" for pkg_name in ("httpx", "pydantic")),
-                                 encoding="utf8")
+    pins = "".join(f"{name}=={ver}\n" for name, ver in sorted(dependency_closure(["httpx", "pydantic"]).items()))
+    requirements_file.write_text("# every package the generated layer was validated against, transitive included\n"
+                                 + pins, encoding="utf8")
     return Generated(pkg, client_file, compose_file, requirements_file,
                      f"ams_generated.{module_name}", client_class, mapper, mapped_methods)
 
 
-def _version(pkg: str) -> str:
-    try:
-        return version(pkg)
-    except PackageNotFoundError:
-        return "0"
+def dependency_closure(roots: list[str]) -> dict[str, str]:
+    """Installed name -> version for `roots` and everything they require (extras excluded).
+
+    Pinning the whole tree, not just the direct imports, means scanners check exactly what
+    was tested, and a vulnerable transitive package cannot slip in at install time.
+    """
+    pinned: dict[str, str] = {}
+    todo = list(roots)
+    while todo:
+        name = todo.pop()
+        key = re.sub(r"[-_.]+", "-", name).lower()
+        if key in pinned:
+            continue
+        try:
+            pinned[key] = version(name)
+        except PackageNotFoundError:
+            continue
+        for req in requires(name) or []:
+            if "extra ==" in req:
+                continue
+            todo.append(re.match(r"[A-Za-z0-9_.\-]+", req).group(0))
+    return pinned
 
 
 def _compose(provider: ServiceSchema, consumer: ServiceSchema, env_var: str, out_dir: Path) -> str:
