@@ -1,6 +1,6 @@
 # AMS: Automated Microservice Synthesis
 
-[![ci](https://github.com/vansh2K5/ams-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/vansh2K5/ams-pipeline/actions/workflows/ci.yml)
+[![ci](https://github.com/vansh2K5/ams-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/vansh2K5/ams-pipeline/actions/workflows/ci.yml) · **[Live report from the latest CI run](https://vansh2k5.github.io/ams-pipeline/)**
 
 **Point AMS at two backend codebases written by different teams, in different languages, with different names for the same data, and it generates the integration layer between them, then proves it works.**
 
@@ -10,9 +10,9 @@ $ ams run --provider examples/order-service --consumer examples/billing-service
 [2/4] mapped Order -> OrderRecord with heuristic: 7 fields, coverage 100%
 [3/4] generated ams_generated/order_service_client.py, docker-compose.ams.yml, requirements.txt
 [4/4] compile ok after 1 heal round(s); end-to-end ok (14/14 field checks)
-[sec] semgrep: ..., gitleaks: ..., osv-scanner: ..., trivy: ..., checkov: ...   (see the CI run)
+[sec] semgrep: clean, gitleaks: clean, osv-scanner: clean, trivy: clean, checkov: skipped
 
-PASS: report at ams-out/ams-report.md
+PASS: report at ams-out/ams-report.html
 ```
 
 ## The problem
@@ -40,7 +40,7 @@ flowchart LR
 | **2. Semantic mapping** | With `ANTHROPIC_API_KEY` set, Claude proposes field pairs. Every pair is validated: unknown fields, duplicates and type clashes are rejected. A deterministic matcher (token split + synonym groups + type compatibility, one-to-one assignment) fills gaps, or does all of it with `--no-llm`. |
 | **3. Generation** | Provider wire DTOs (Pydantic, provider JSON names as aliases, nested types in dependency order), a mapper into the consumer's own model, an `httpx` client per endpoint (pooled connections, connect/read timeouts, backoff retry on 502/503/504 and transport errors), a hardened `docker-compose` (private network, service DNS names, read-only, `no-new-privileges`) and a pinned requirements file. |
 | **4. Self-healing validation** | Compile + Ruff (syntax and pyflakes). Ruff autofixes first; remaining diagnostics go to the LLM with the exact errors as context, for up to 3 rounds. Then a **mock provider built from the parsed schema** serves realistic payloads, the generated client runs against it in a separate process, and every mapped field is compared value by value. |
-| **Security gate** | Five scanners run **in parallel** over only the generated delta. A scanner that is not installed is reported as *skipped*, never as clean. |
+| **Security gate** | Five scanners run **in parallel** over only the generated delta. A scanner only counts as *clean* if it actually examined something: not installed or nothing in scope is *skipped* with the reason, and empty or unreadable output is an *error* that fails the gate. The generated `requirements.txt` pins the full transitive dependency tree the layer was tested with, so OSV-Scanner and Trivy check exactly what shipped. |
 
 ## Quick start
 
@@ -53,11 +53,21 @@ export ANTHROPIC_API_KEY=...                        # optional: LLM mapping + LL
 ams run --provider examples/order-service --consumer examples/billing-service
 ```
 
-Other commands: `ams parse <service>` (Phase 1 schema as JSON), `ams map --provider ... --consumer ...` (mapping plan), `ams scan <dir>` (security gate only). `--pair Order:OrderRecord` forces the entity pair; `--apply` copies the verified layer into the consumer.
+Other commands: `ams parse <service>` (Phase 1 schema as JSON), `ams map --provider ... --consumer ...` (mapping plan), `ams scan <dir>` (security gate only), `ams report [out-dir] --open` (rebuild and open the HTML report). `--pair Order:OrderRecord` forces the entity pair; `--apply` copies the verified layer into the consumer.
 
-## Output
+## Reports
 
-`ams-out/` holds the generated code, `schemas/*.json`, `mapping.json` and `ams-report.md` / `.json` (mapping with confidence and source per field, heal rounds, end-to-end checks, scanner results). CI publishes the report to the job summary on every push.
+Every run writes three reports to `ams-out/`:
+
+| File | For |
+|---|---|
+| `ams-report.html` | People. A self-contained page (no external assets, light and dark): verdict, a **"Why it failed"** list in plain language, coverage / check / scanner tiles, per-phase timings, the field mapping with source types and confidence, every end-to-end check with expected vs actual, each scanner's status and findings (advisory or rule id + location), and both parsed services. |
+| `ams-report.md` | CI. Posted to the GitHub Actions job summary on every run. |
+| `ams-report.json` | Machines. The full result, including both parsed schemas. |
+
+`ams report [out-dir] [--open]` rebuilds the Markdown and HTML from the JSON, so a report downloaded from a CI artifact can be re-rendered locally. On `main`, CI also publishes the HTML report to [GitHub Pages](https://vansh2k5.github.io/ams-pipeline/).
+
+The output directory also holds the generated code, `schemas/*.json` and `mapping.json`.
 
 ## Tests
 

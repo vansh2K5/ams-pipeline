@@ -38,7 +38,7 @@ jobs:
           chmod +x /usr/local/bin/osv-scanner
       - name: Run the full pipeline on the examples (deterministic mode)
         run: ams run --provider examples/order-service --consumer examples/billing-service --out ams-out --no-llm
-      - name: Publish report
+      - name: Publish report to the job summary
         if: always()
         run: cat ams-out/ams-report.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
@@ -46,3 +46,24 @@ jobs:
         with:
           name: ams-report
           path: ams-out/
+      - name: Stage the HTML report for GitHub Pages
+        if: always() && github.ref == 'refs/heads/main'
+        run: mkdir -p site && cp ams-out/ams-report.html site/index.html
+      - uses: actions/upload-pages-artifact@v3
+        if: always() && github.ref == 'refs/heads/main'
+        with:
+          path: site
+
+  publish-report:
+    needs: pipeline-and-security
+    if: always() && github.ref == 'refs/heads/main' && needs.pipeline-and-security.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

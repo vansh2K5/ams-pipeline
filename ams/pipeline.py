@@ -1,4 +1,4 @@
-"""Orchestrator: runs the four phases plus the security gate and writes the report."""
+"""Orchestrator: runs the four phases plus the security gate and writes the reports."""
 
 from __future__ import annotations
 
@@ -7,12 +7,15 @@ import shutil
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ams.generate import generate
 from ams.llm import get_llm
 from ams.mapping import MappingPlan, build_plan, choose_pair
 from ams.parsers import parse_service
+from ams.report import write_reports
+from ams.schema import ServiceSchema
 from ams.security import ScanResult, scan
 from ams.validate import E2EResult, HealResult, end_to_end, heal
 
@@ -26,7 +29,9 @@ class Report:
     heal: HealResult
     e2e: E2EResult
     security: list[ScanResult]
+    schemas: list[ServiceSchema] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
+    generated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat(timespec="seconds"))
 
     @property
     def passed(self) -> bool:
@@ -39,6 +44,7 @@ class Report:
             "passed": self.passed, "provider": self.provider, "consumer": self.consumer,
             "mapping": self.plan.to_dict(), "generated": self.generated, "heal": asdict(self.heal),
             "e2e": self.e2e.to_dict(), "security": [s.to_dict() for s in self.security], "timings_s": self.timings,
+            "generated_at": self.generated_at, "schemas": {s.name: s.to_dict() for s in self.schemas},
         }
 
 
@@ -112,29 +118,9 @@ def run(provider_root: Path, consumer_root: Path, out_dir: Path, pair: tuple[str
         log(f"[apply] copied integration layer into {dest}")
 
     report = Report(provider.name, consumer.name, plan, [p.relative_to(out_dir).as_posix() for p in gen.files],
-                    healed, e2e, results, timings)
-    (out_dir / "ams-report.json").write_text(json.dumps(report.to_dict(), indent=2, default=str), encoding="utf8")
-    (out_dir / "ams-report.md").write_text(markdown(report), encoding="utf8")
+                    healed, e2e, results, [provider, consumer], timings)
+    data = report.to_dict()
+    (out_dir / "ams-report.json").write_text(json.dumps(data, indent=2, default=str), encoding="utf8")
+    write_reports(out_dir, json.loads(json.dumps(data, default=str)))
     return report
 
-
-def markdown(r: Report) -> str:
-    lines = [f"# AMS report: {r.consumer} -> {r.provider}", "",
-             f"**Result:** {'PASS' if r.passed else 'FAIL'}  ", f"**Mapping engine:** {r.plan.engine}", "",
-             f"## Field mapping ({r.plan.provider_entity} -> {r.plan.consumer_entity})", "",
-             "| Consumer field | Provider field (wire) | Confidence | Source |", "|---|---|---|---|"]
-    lines += [f"| `{p.consumer_field}` | `{p.provider_json}` | {p.confidence:.2f} | {p.source} |" for p in r.plan.pairs]
-    lines += [f"| `{f}` | _unmapped_ | | |" for f in r.plan.unmapped_consumer]
-    lines += ["", "## Validation", "",
-              f"- Compile: {'pass' if r.heal.passed else 'fail'} ({len(r.heal.rounds)} heal round(s))"]
-    lines += [f"  - round {h.round}: {h.action} ({len(h.diagnostics)} diagnostic(s))" for h in r.heal.rounds]
-    checks = f"{sum(c.ok for c in r.e2e.checks)}/{len(r.e2e.checks)} field checks"
-    lines += [f"- End-to-end: {'pass' if r.e2e.passed else 'fail'}, {checks}, requests: {', '.join(r.e2e.requests)}"]
-    if r.security:
-        lines += ["", "## Security (delta-scoped, parallel)", "", "| Scanner | Status | Findings |", "|---|---|---|"]
-        lines += [f"| {s.tool} | {s.status} | {s.findings if s.status != 'skipped' else '-'} |" for s in r.security]
-        details = [f"- **{s.tool}** ({s.status}): {s.detail}" for s in r.security if s.detail]
-        details += [f"- `{s.tool}`: {item}" for s in r.security for item in s.items]
-        if details:
-            lines += ["", *details]
-    return "\n".join(lines) + "\n"
