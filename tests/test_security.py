@@ -35,9 +35,19 @@ def test_gitleaks_without_report_is_an_error(monkeypatch, tmp_path):
 
 
 def test_findings_are_counted(monkeypatch, tmp_path):
-    fake_tools(monkeypatch, stdout='{"results": [{"check_id": "a"}, {"check_id": "b"}]}', returncode=1)
+    out = '{"paths": {"scanned": ["x.py"]}, "results": [{"check_id": "a"}, {"check_id": "b"}]}'
+    fake_tools(monkeypatch, stdout=out, returncode=1)
     (result,) = security.scan(tmp_path, tools=["semgrep"])
     assert (result.status, result.findings) == ("findings", 2)
+
+
+def test_scanning_nothing_is_skipped_not_clean(monkeypatch, tmp_path):
+    fake_tools(monkeypatch, stdout='{"paths": {"scanned": []}, "results": []}')
+    (result,) = security.scan(tmp_path, tools=["semgrep"])
+    assert (result.status, result.detail) == ("skipped", "no files scanned")
+    fake_tools(monkeypatch, stdout='{"passed": 0, "failed": 0, "resource_count": 0}')
+    (result,) = security.scan(tmp_path, tools=["checkov"])
+    assert result.status == "skipped"
 
 
 def test_crash_exit_code_is_an_error(monkeypatch, tmp_path):

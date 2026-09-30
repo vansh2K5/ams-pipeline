@@ -1,8 +1,9 @@
 """Security gate: five scanners run in parallel over only what AMS generated (delta scope).
 
 Semgrep (code patterns), Gitleaks (secrets), OSV-Scanner (known-vulnerable dependencies),
-Trivy (vulns + secrets + misconfig) and Checkov (IaC / container config). A scanner that
-is not installed is reported as skipped, never silently treated as clean.
+Trivy (vulns + secrets + misconfig) and Checkov (IaC / container config). A scanner is only
+reported clean when it actually examined something: not installed, or nothing in scope,
+is "skipped" with the reason; empty or unreadable output is an "error".
 """
 
 from __future__ import annotations
@@ -28,6 +29,10 @@ class ScanResult:
         return asdict(self)
 
 
+class NothingScanned(Exception):
+    """The scanner ran but found nothing in scope to examine."""
+
+
 def _load(text: str):
     """Parse a scanner's JSON output. Empty output is an error, never an implicit "clean"."""
     text = text.strip()
@@ -39,7 +44,14 @@ def _load(text: str):
 def _semgrep(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str], int]]:
     rules = [arg for pack in ("p/python", "p/security-audit", "p/secrets") for arg in ("--config", pack)]
     cmd = ["semgrep", "scan", *rules, "--json", "--quiet", "--metrics", "off", *map(str, files)]
-    return cmd, lambda out: len(_load(out).get("results", []))
+
+    def count(out: str) -> int:
+        data = _load(out)
+        if not data.get("paths", {}).get("scanned"):
+            raise NothingScanned("no files scanned")
+        return len(data.get("results", []))
+
+    return cmd, count
 
 
 def _gitleaks(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str], int]]:
@@ -56,7 +68,8 @@ def _gitleaks(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str
 
 
 def _osv(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str], int]]:
-    cmd = ["osv-scanner", "scan", "source", "--format", "json", "-r", str(target)]
+    # --no-ignore: the output dir is usually gitignored, which OSV-Scanner honours by default
+    cmd = ["osv-scanner", "scan", "source", "--no-ignore", "--format", "json", "-r", str(target)]
 
     def count(out: str) -> int:
         data = _load(out)
@@ -70,6 +83,8 @@ def _trivy(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str], 
 
     def count(out: str) -> int:
         results = _load(out).get("Results") or []
+        if not results:
+            raise NothingScanned("no scannable targets")
         return sum(len(r.get("Vulnerabilities") or []) + len(r.get("Secrets") or [])
                    + len([m for m in (r.get("Misconfigurations") or []) if m.get("Status") == "FAIL"])
                    for r in results)
@@ -82,8 +97,10 @@ def _checkov(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str]
 
     def count(out: str) -> int:
         data = _load(out)
-        reports = data if isinstance(data, list) else [data]
-        return sum(len(r.get("results", {}).get("failed_checks", [])) for r in reports if isinstance(r, dict))
+        reports = [r for r in (data if isinstance(data, list) else [data]) if isinstance(r, dict) and "results" in r]
+        if not reports:
+            raise NothingScanned("no IaC resources in scope")
+        return sum(len(r.get("results", {}).get("failed_checks", [])) for r in reports)
 
     return cmd, count
 
@@ -107,6 +124,8 @@ def _run(tool: str, target: Path, files: list[Path], timeout: int) -> ScanResult
         return ScanResult(tool, "error", detail=f"exit {proc.returncode}: {stderr}")
     try:
         n = count(proc.stdout)
+    except NothingScanned as e:
+        return ScanResult(tool, "skipped", detail=str(e))
     except ValueError as e:  # includes JSONDecodeError
         return ScanResult(tool, "error", detail=f"{e}: {stderr}")
     return ScanResult(tool, "findings" if n else "clean", n)
