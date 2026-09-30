@@ -102,6 +102,9 @@ def run(provider_root: Path, consumer_root: Path, out_dir: Path, pair: tuple[str
         results = scan(out_dir, gen.files)
         done()
         log("[sec] " + ", ".join(f"{r.tool}: {r.status}" + (f" ({r.findings})" if r.findings else "") for r in results))
+        for r in results:
+            for item in r.items[:20]:
+                log(f"      {r.tool}: {item}")
 
     if apply and healed.passed and e2e.passed:
         dest = Path(consumer.root) / "ams_generated"
@@ -130,4 +133,8 @@ def markdown(r: Report) -> str:
     if r.security:
         lines += ["", "## Security (delta-scoped, parallel)", "", "| Scanner | Status | Findings |", "|---|---|---|"]
         lines += [f"| {s.tool} | {s.status} | {s.findings if s.status != 'skipped' else '-'} |" for s in r.security]
+        details = [f"- **{s.tool}** ({s.status}): {s.detail}" for s in r.security if s.detail]
+        details += [f"- `{s.tool}`: {item}" for s in r.security for item in s.items]
+        if details:
+            lines += ["", *details]
     return "\n".join(lines) + "\n"

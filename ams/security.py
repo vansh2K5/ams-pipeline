@@ -3,7 +3,8 @@
 Semgrep (code patterns), Gitleaks (secrets), OSV-Scanner (known-vulnerable dependencies),
 Trivy (vulns + secrets + misconfig) and Checkov (IaC / container config). A scanner is only
 reported clean when it actually examined something: not installed, or nothing in scope,
-is "skipped" with the reason; empty or unreadable output is an "error".
+is "skipped" with the reason; empty or unreadable output is an "error". Findings are kept
+as labels (rule or advisory id + location) so the report says what was found, not just how many.
 """
 
 from __future__ import annotations
@@ -14,8 +15,10 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+Parser = Callable[[str], list[str]]
 
 
 @dataclass
@@ -24,6 +27,7 @@ class ScanResult:
     status: str  # clean | findings | skipped | error
     findings: int = 0
     detail: str = ""
+    items: list[str] = field(default_factory=list)  # e.g. "GHSA-xxxx h11@0.14.0 (transitive)"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -41,68 +45,80 @@ def _load(text: str):
     return json.loads(text)
 
 
-def _semgrep(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str], int]]:
+def _semgrep(target: Path, files: list[Path]) -> tuple[list[str], Parser]:
     rules = [arg for pack in ("p/python", "p/security-audit", "p/secrets") for arg in ("--config", pack)]
     cmd = ["semgrep", "scan", *rules, "--json", "--quiet", "--metrics", "off", *map(str, files)]
 
-    def count(out: str) -> int:
+    def parse(out: str) -> list[str]:
         data = _load(out)
         if not data.get("paths", {}).get("scanned"):
             raise NothingScanned("no files scanned")
-        return len(data.get("results", []))
+        return [f"{r['check_id']} {Path(r['path']).name}:{r['start']['line']}" for r in data.get("results", [])]
 
-    return cmd, count
+    return cmd, parse
 
 
-def _gitleaks(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str], int]]:
+def _gitleaks(target: Path, files: list[Path]) -> tuple[list[str], Parser]:
     report = Path(tempfile.mkdtemp()) / "gitleaks.json"
     cmd = ["gitleaks", "dir", str(target), "--no-banner", "--exit-code", "0",
            "--report-format", "json", "--report-path", str(report)]
 
-    def count(_: str) -> int:
+    def parse(_: str) -> list[str]:
         if not report.exists():
             raise ValueError("gitleaks wrote no report")
-        return len(json.loads(report.read_text() or "[]"))
+        leaks = json.loads(report.read_text() or "[]")
+        return [f"{f['RuleID']} {Path(f['File']).name}:{f['StartLine']}" for f in leaks]
 
-    return cmd, count
+    return cmd, parse
 
 
-def _osv(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str], int]]:
+def _osv(target: Path, files: list[Path]) -> tuple[list[str], Parser]:
     # --no-ignore: the output dir is usually gitignored, which OSV-Scanner honours by default
     cmd = ["osv-scanner", "scan", "source", "--no-ignore", "--format", "json", "-r", str(target)]
 
-    def count(out: str) -> int:
+    def parse(out: str) -> list[str]:
         data = _load(out)
-        return sum(len(p.get("vulnerabilities", [])) for r in data.get("results", []) for p in r.get("packages", []))
+        items = []
+        for result in data.get("results", []):
+            for pkg in result.get("packages", []):
+                info = pkg.get("package", {})
+                for vuln in pkg.get("vulnerabilities", []):
+                    items.append(f"{vuln['id']} {info.get('name')}@{info.get('version')}")
+        return items
 
-    return cmd, count
+    return cmd, parse
 
 
-def _trivy(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str], int]]:
+def _trivy(target: Path, files: list[Path]) -> tuple[list[str], Parser]:
     cmd = ["trivy", "fs", "--quiet", "--format", "json", "--scanners", "vuln,secret,misconfig", str(target)]
 
-    def count(out: str) -> int:
+    def parse(out: str) -> list[str]:
         results = _load(out).get("Results") or []
         if not results:
             raise NothingScanned("no scannable targets")
-        return sum(len(r.get("Vulnerabilities") or []) + len(r.get("Secrets") or [])
-                   + len([m for m in (r.get("Misconfigurations") or []) if m.get("Status") == "FAIL"])
-                   for r in results)
+        items = []
+        for r in results:
+            vulns = r.get("Vulnerabilities") or []
+            items += [f"{v['VulnerabilityID']} {v['PkgName']}@{v['InstalledVersion']}" for v in vulns]
+            items += [f"{s['RuleID']} {r['Target']}" for s in r.get("Secrets") or []]
+            items += [f"{m['ID']} {r['Target']}" for m in r.get("Misconfigurations") or [] if m.get("Status") == "FAIL"]
+        return items
 
-    return cmd, count
+    return cmd, parse
 
 
-def _checkov(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str], int]]:
+def _checkov(target: Path, files: list[Path]) -> tuple[list[str], Parser]:
     cmd = ["checkov", "-d", str(target), "-o", "json", "--quiet", "--compact"]
 
-    def count(out: str) -> int:
+    def parse(out: str) -> list[str]:
         data = _load(out)
         reports = [r for r in (data if isinstance(data, list) else [data]) if isinstance(r, dict) and "results" in r]
         if not reports:
             raise NothingScanned("no IaC resources in scope")
-        return sum(len(r.get("results", {}).get("failed_checks", [])) for r in reports)
+        failed = [c for r in reports for c in r["results"].get("failed_checks", [])]
+        return [f"{c['check_id']} {c.get('file_path', '')}" for c in failed]
 
-    return cmd, count
+    return cmd, parse
 
 
 SCANNERS = {"semgrep": _semgrep, "gitleaks": _gitleaks, "osv-scanner": _osv, "trivy": _trivy, "checkov": _checkov}
@@ -111,7 +127,7 @@ SCANNERS = {"semgrep": _semgrep, "gitleaks": _gitleaks, "osv-scanner": _osv, "tr
 def _run(tool: str, target: Path, files: list[Path], timeout: int) -> ScanResult:
     if shutil.which(tool) is None:
         return ScanResult(tool, "skipped", detail="not installed")
-    cmd, count = SCANNERS[tool](target, files)
+    cmd, parse = SCANNERS[tool](target, files)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=target, check=False)
     except subprocess.TimeoutExpired:
@@ -123,12 +139,12 @@ def _run(tool: str, target: Path, files: list[Path], timeout: int) -> ScanResult
     if proc.returncode not in (0, 1):
         return ScanResult(tool, "error", detail=f"exit {proc.returncode}: {stderr}")
     try:
-        n = count(proc.stdout)
+        items = parse(proc.stdout)
     except NothingScanned as e:
         return ScanResult(tool, "skipped", detail=str(e))
-    except ValueError as e:  # includes JSONDecodeError
-        return ScanResult(tool, "error", detail=f"{e}: {stderr}")
-    return ScanResult(tool, "findings" if n else "clean", n)
+    except (ValueError, KeyError) as e:  # ValueError includes JSONDecodeError
+        return ScanResult(tool, "error", detail=f"unreadable output ({e}): {stderr}")
+    return ScanResult(tool, "findings" if items else "clean", len(items), items=items)
 
 
 def scan(target: Path, files: list[Path] | None = None, tools: list[str] | None = None,

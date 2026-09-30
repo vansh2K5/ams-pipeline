@@ -35,10 +35,12 @@ def test_gitleaks_without_report_is_an_error(monkeypatch, tmp_path):
 
 
 def test_findings_are_counted(monkeypatch, tmp_path):
-    out = '{"paths": {"scanned": ["x.py"]}, "results": [{"check_id": "a"}, {"check_id": "b"}]}'
+    hit = '{{"check_id": "{}", "path": "/x/client.py", "start": {{"line": 7}}}}'
+    out = f'{{"paths": {{"scanned": ["x.py"]}}, "results": [{hit.format("a")}, {hit.format("b")}]}}'
     fake_tools(monkeypatch, stdout=out, returncode=1)
     (result,) = security.scan(tmp_path, tools=["semgrep"])
     assert (result.status, result.findings) == ("findings", 2)
+    assert result.items == ["a client.py:7", "b client.py:7"]
 
 
 def test_scanning_nothing_is_skipped_not_clean(monkeypatch, tmp_path):
