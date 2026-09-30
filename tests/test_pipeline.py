@@ -59,7 +59,7 @@ def test_e2e_catches_a_wrong_mapping(tmp_path):
     assert report.e2e.passed
     client = tmp_path / "ams_generated" / "order_service_client.py"
     client.write_text(client.read_text().replace("client_id=src.customer_id", "client_id=src.order_id"))
-    gen = Generated(client.parent, client, tmp_path / "docker-compose.ams.yml", tmp_path / "requirements.ams.txt",
+    gen = Generated(client.parent, client, tmp_path / "docker-compose.ams.yml", tmp_path / "requirements.txt",
                     "ams_generated.order_service_client", "OrderServiceClient", "to_order_record",
                     ["get_order_as_order_record"])
     result = end_to_end(parse_service(EXAMPLES / "order-service"), parse_service(EXAMPLES / "billing-service"),

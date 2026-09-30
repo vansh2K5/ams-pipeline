@@ -257,7 +257,7 @@ class {client_class}:
     compose_file = out_dir / "docker-compose.ams.yml"
     compose_file.write_text(_compose(provider, consumer, env_var, out_dir), encoding="utf8")
 
-    requirements_file = out_dir / "requirements.ams.txt"
+    requirements_file = out_dir / "requirements.txt"  # standard name so OSV-Scanner and Trivy detect it
     requirements_file.write_text("".join(f"{pkg_name}=={_version(pkg_name)}\n" for pkg_name in ("httpx", "pydantic")),
                                  encoding="utf8")
     return Generated(pkg, client_file, compose_file, requirements_file,

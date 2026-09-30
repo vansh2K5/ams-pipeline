@@ -8,7 +8,7 @@
 $ ams run --provider examples/order-service --consumer examples/billing-service
 [1/4] parsed order-service (java/spring-boot): 3 entities, 3 endpoints; billing-service (python/fastapi): 2 entities
 [2/4] mapped Order -> OrderRecord with heuristic: 7 fields, coverage 100%
-[3/4] generated ams_generated/order_service_client.py, docker-compose.ams.yml, requirements.ams.txt
+[3/4] generated ams_generated/order_service_client.py, docker-compose.ams.yml, requirements.txt
 [4/4] compile ok after 1 heal round(s); end-to-end ok (14/14 field checks)
 [sec] semgrep: ..., gitleaks: ..., osv-scanner: ..., trivy: ..., checkov: ...   (see the CI run)
 
