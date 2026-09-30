@@ -29,12 +29,16 @@ class ScanResult:
 
 
 def _load(text: str):
+    """Parse a scanner's JSON output. Empty output is an error, never an implicit "clean"."""
     text = text.strip()
-    return json.loads(text) if text else {}
+    if not text:
+        raise ValueError("scanner produced no JSON output")
+    return json.loads(text)
 
 
 def _semgrep(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str], int]]:
-    cmd = ["semgrep", "scan", "--config", "auto", "--json", "--quiet", "--metrics", "off", *map(str, files)]
+    rules = [arg for pack in ("p/python", "p/security-audit", "p/secrets") for arg in ("--config", pack)]
+    cmd = ["semgrep", "scan", *rules, "--json", "--quiet", "--metrics", "off", *map(str, files)]
     return cmd, lambda out: len(_load(out).get("results", []))
 
 
@@ -44,7 +48,9 @@ def _gitleaks(target: Path, files: list[Path]) -> tuple[list[str], Callable[[str
            "--report-format", "json", "--report-path", str(report)]
 
     def count(_: str) -> int:
-        return len(json.loads(report.read_text() or "[]")) if report.exists() else 0
+        if not report.exists():
+            raise ValueError("gitleaks wrote no report")
+        return len(json.loads(report.read_text() or "[]"))
 
     return cmd, count
 
@@ -91,21 +97,26 @@ def _run(tool: str, target: Path, files: list[Path], timeout: int) -> ScanResult
     cmd, count = SCANNERS[tool](target, files)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=target, check=False)
-        # osv-scanner exits 1 when it finds vulns, checkov 1 on failed checks; both still print JSON
-        n = count(proc.stdout)
     except subprocess.TimeoutExpired:
         return ScanResult(tool, "error", detail=f"timed out after {timeout}s")
-    except (json.JSONDecodeError, OSError) as e:
-        return ScanResult(tool, "error", detail=f"{type(e).__name__}: {e}")
-    if proc.returncode not in (0, 1) and n == 0:
-        return ScanResult(tool, "error", detail=(proc.stderr.strip().splitlines() or ["failed"])[-1][:200])
+    except OSError as e:
+        return ScanResult(tool, "error", detail=str(e))
+    stderr = (proc.stderr.strip().splitlines() or ["no output"])[-1][:200]
+    # osv-scanner exits 1 when it finds vulns, checkov 1 on failed checks; both still print JSON
+    if proc.returncode not in (0, 1):
+        return ScanResult(tool, "error", detail=f"exit {proc.returncode}: {stderr}")
+    try:
+        n = count(proc.stdout)
+    except ValueError as e:  # includes JSONDecodeError
+        return ScanResult(tool, "error", detail=f"{e}: {stderr}")
     return ScanResult(tool, "findings" if n else "clean", n)
 
 
 def scan(target: Path, files: list[Path] | None = None, tools: list[str] | None = None,
          timeout: int = 600) -> list[ScanResult]:
     """Scan `target` (the generated delta). All scanners run concurrently."""
-    files = files or [p for p in target.rglob("*") if p.is_file()]
+    target = target.resolve()  # scanners run with cwd=target, so relative paths would resolve twice
+    files = [f.resolve() for f in files] if files else [p for p in target.rglob("*") if p.is_file()]
     tools = tools or list(SCANNERS)
     with ThreadPoolExecutor(max_workers=len(tools)) as pool:
         return list(pool.map(lambda t: _run(t, target, files, timeout), tools))

@@ -30,7 +30,9 @@ class Report:
 
     @property
     def passed(self) -> bool:
-        return self.heal.passed and self.e2e.passed and not any(s.status == "findings" for s in self.security)
+        # a scanner that errored has not shown the code is clean, so it fails the gate too
+        scans_ok = not any(s.status in ("findings", "error") for s in self.security)
+        return self.heal.passed and self.e2e.passed and scans_ok
 
     def to_dict(self) -> dict:
         return {
